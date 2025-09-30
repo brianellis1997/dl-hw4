@@ -24,20 +24,34 @@ class MLPPlanner(nn.Module):
         self.n_track = n_track
         self.n_waypoints = n_waypoints
         
-        input_dim = n_track * 2 * 2
-        hidden_dim = 256
+        input_dim = n_track * 2 * 2 + n_track * 2 + n_track
+        hidden_dim = 512
         
-        self.mlp = nn.Sequential(
+        self.track_encoder = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
             nn.BatchNorm1d(hidden_dim),
+            nn.Dropout(0.1),
+        )
+        
+        self.waypoint_predictor = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.BatchNorm1d(hidden_dim),
-            nn.Linear(hidden_dim, 128),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_dim, 256),
+            nn.ReLU(),
+            nn.BatchNorm1d(256),
+            nn.Linear(256, 128),
             nn.ReLU(),
             nn.BatchNorm1d(128),
             nn.Linear(128, n_waypoints * 2)
+        )
+        
+        self.lateral_refiner = nn.Sequential(
+            nn.Linear(n_waypoints * 2 + hidden_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, n_waypoints * 2)
         )
 
     def forward(
@@ -61,11 +75,20 @@ class MLPPlanner(nn.Module):
         """
         batch_size = track_left.shape[0]
         
-        combined = torch.cat([track_left, track_right], dim=1)
+        track_center = (track_left + track_right) / 2
+        track_width = torch.norm(track_right - track_left, dim=-1, keepdim=True)
+        
+        combined = torch.cat([track_left, track_right, track_center, track_width], dim=1)
         features = combined.reshape(batch_size, -1)
         
-        output = self.mlp(features)
-        waypoints = output.reshape(batch_size, self.n_waypoints, 2)
+        track_features = self.track_encoder(features)
+        
+        waypoints_initial = self.waypoint_predictor(track_features)
+        
+        combined_features = torch.cat([waypoints_initial, track_features], dim=1)
+        waypoints_refined = self.lateral_refiner(combined_features)
+        
+        waypoints = (waypoints_initial + waypoints_refined).reshape(batch_size, self.n_waypoints, 2)
         
         return waypoints
 

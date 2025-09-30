@@ -43,7 +43,7 @@ def train(args):
     model = load_model(args.model).to(device)
     print(f"Model: {args.model}")
     
-    criterion = nn.L1Loss()
+    criterion = nn.L1Loss(reduction='none')
     
     if args.model == "transformer_planner":
         optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
@@ -82,7 +82,13 @@ def train(args):
             masked_predictions = predictions * waypoints_mask.unsqueeze(-1)
             masked_waypoints = waypoints * waypoints_mask.unsqueeze(-1)
             
-            loss = criterion(masked_predictions, masked_waypoints)
+            loss_per_dim = criterion(masked_predictions, masked_waypoints)
+            
+            if args.model == "mlp_planner" and args.lateral_weight > 1.0:
+                lateral_weight = torch.tensor([args.lateral_weight, 1.0], device=device)
+                loss_per_dim = loss_per_dim * lateral_weight.view(1, 1, 2)
+            
+            loss = loss_per_dim.mean()
             
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -117,7 +123,13 @@ def train(args):
                 masked_predictions = predictions * waypoints_mask.unsqueeze(-1)
                 masked_waypoints = waypoints * waypoints_mask.unsqueeze(-1)
                 
-                loss = criterion(masked_predictions, masked_waypoints)
+                loss_per_dim = criterion(masked_predictions, masked_waypoints)
+                
+                if args.model == "mlp_planner" and args.lateral_weight > 1.0:
+                    lateral_weight = torch.tensor([args.lateral_weight, 1.0], device=device)
+                    loss_per_dim = loss_per_dim * lateral_weight.view(1, 1, 2)
+                
+                loss = loss_per_dim.mean()
                 
                 val_loss += loss.item()
                 val_batches += 1
@@ -152,6 +164,8 @@ def main():
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--num_workers", type=int, default=2)
+    parser.add_argument("--lateral_weight", type=float, default=1.0,
+                       help="Weight for lateral (x) dimension loss, helps improve steering")
     
     args = parser.parse_args()
     train(args)
