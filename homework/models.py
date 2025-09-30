@@ -24,7 +24,9 @@ class MLPPlanner(nn.Module):
         self.n_track = n_track
         self.n_waypoints = n_waypoints
         
-        input_dim = n_track * 2 * 2 + n_track * 2 + n_track
+        # track_left + track_right + track_center + track_width_expanded
+        # Each has shape (n_track, 2), so 4 * n_track * 2
+        input_dim = n_track * 4 * 2
         hidden_dim = 512
         
         self.track_encoder = nn.Sequential(
@@ -75,10 +77,15 @@ class MLPPlanner(nn.Module):
         """
         batch_size = track_left.shape[0]
         
-        track_center = (track_left + track_right) / 2
-        track_width = torch.norm(track_right - track_left, dim=-1, keepdim=True)
+        # Calculate track center and width
+        track_center = (track_left + track_right) / 2  # (b, n_track, 2)
+        track_width = torch.norm(track_right - track_left, dim=-1, keepdim=True)  # (b, n_track, 1)
         
-        combined = torch.cat([track_left, track_right, track_center, track_width], dim=1)
+        # Expand width to have 2 channels for consistency
+        track_width_expanded = track_width.expand(-1, -1, 2)  # (b, n_track, 2)
+        
+        # Concatenate all features
+        combined = torch.cat([track_left, track_right, track_center, track_width_expanded], dim=1)
         features = combined.reshape(batch_size, -1)
         
         track_features = self.track_encoder(features)
