@@ -184,6 +184,7 @@ class CNNPlanner(torch.nn.Module):
         self.register_buffer("input_mean", torch.as_tensor(INPUT_MEAN), persistent=False)
         self.register_buffer("input_std", torch.as_tensor(INPUT_STD), persistent=False)
         
+        # Enhanced CNN with residual connections
         self.conv1 = nn.Conv2d(3, 32, kernel_size=7, stride=2, padding=3)
         self.bn1 = nn.BatchNorm2d(32)
         self.relu = nn.ReLU(inplace=True)
@@ -197,15 +198,31 @@ class CNNPlanner(torch.nn.Module):
         self.conv4 = nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1)
         self.bn4 = nn.BatchNorm2d(256)
         
+        # Additional conv layer for better feature extraction
+        self.conv5 = nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1)
+        self.bn5 = nn.BatchNorm2d(256)
+        
         self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
         
-        self.fc = nn.Sequential(
+        # Deeper FC with separate heads for longitudinal and lateral
+        self.shared_fc = nn.Sequential(
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.BatchNorm1d(256),
+            nn.Dropout(0.2),
+        )
+        
+        # Separate prediction heads
+        self.longitudinal_head = nn.Sequential(
             nn.Linear(256, 128),
             nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(128, 64),
+            nn.Linear(128, n_waypoints)
+        )
+        
+        self.lateral_head = nn.Sequential(
+            nn.Linear(256, 128),
             nn.ReLU(),
-            nn.Linear(64, n_waypoints * 2)
+            nn.Linear(128, n_waypoints)
         )
 
     def forward(self, image: torch.Tensor, **kwargs) -> torch.Tensor:
@@ -235,12 +252,25 @@ class CNNPlanner(torch.nn.Module):
         x = self.bn4(x)
         x = self.relu(x)
         
+        # Additional conv layer with residual
+        identity = x
+        x = self.conv5(x)
+        x = self.bn5(x)
+        x = self.relu(x)
+        x = x + identity  # Residual connection
+        
         x = self.global_pool(x)
         x = x.flatten(1)
         
-        x = self.fc(x)
+        # Shared features
+        features = self.shared_fc(x)
         
-        waypoints = x.reshape(-1, self.n_waypoints, 2)
+        # Separate predictions for longitudinal and lateral
+        longitudinal = self.longitudinal_head(features)  # (B, n_waypoints)
+        lateral = self.lateral_head(features)  # (B, n_waypoints)
+        
+        # Stack to create waypoints
+        waypoints = torch.stack([lateral, longitudinal], dim=-1)  # (B, n_waypoints, 2)
         
         return waypoints
 
